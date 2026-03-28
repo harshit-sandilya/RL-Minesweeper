@@ -1,4 +1,6 @@
-__pycache__/
-logs/
-models/
-.ropeproject/
+.omc
+.vscode
+.venv
+
+__pycache__
+*.egg-info
