@@ -37,10 +37,10 @@ except Exception as e:  # pragma: no cover
 
 try:
     from ..models import MinesweeperAction, MinesweeperObservation
-    from .minesweeper_env_environment import MinesweeperEnvironment
+    from .minesweeper_environment import MinesweeperEnvironment
 except ModuleNotFoundError:
     from models import MinesweeperAction, MinesweeperObservation
-    from server.minesweeper_env_environment import MinesweeperEnvironment
+    from server.minesweeper_environment import MinesweeperEnvironment
 
 
 # Create the app with web interface and README integration
@@ -49,7 +49,7 @@ app = create_app(
     MinesweeperAction,
     MinesweeperObservation,
     env_name="minesweeper_env",
-    max_concurrent_envs=16,  # increase this number to allow more concurrent WebSocket sessions
+    max_concurrent_envs=16,
 )
 
 

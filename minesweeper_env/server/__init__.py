@@ -6,6 +6,6 @@
 
 """Minesweeper Env environment server components."""
 
-from .minesweeper_env_environment import MinesweeperEnvironment
+from .minesweeper_environment import MinesweeperEnvironment
 
 __all__ = ["MinesweeperEnvironment"]

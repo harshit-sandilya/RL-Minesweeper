@@ -1,18 +1,17 @@
-# game_engine.py
 from __future__ import annotations
 
 import itertools
 import random
 from collections import deque
 from enum import IntEnum
-from typing import Optional, Tuple, List
+from typing import List, Optional, Tuple
 
 import numpy as np
 
 
 class Cell(IntEnum):
-    MINE = 16
-    UNKNOWN = 255
+    UNKNOWN = 9
+    MINE = 10
 
 
 class GameStatus(IntEnum):
@@ -54,12 +53,9 @@ class MinesweeperEngine:
 
         # Initialised properly in reset()
         self.grid: List[List[int]] = []
-        self.view: List[List[int]] = []
         self.revealed: set[Tuple[int, int]] = set()
         self.status: GameStatus = GameStatus.ONGOING
         self.step_count: int = 0
-
-        self._last_action: Optional[Tuple[int, int]] = None
 
         self._build()
 
@@ -78,9 +74,15 @@ class MinesweeperEngine:
         """
         Uncover cell (row, col).
 
+        Reward design — all values in [0.0, 1.0]:
+            Re-click on revealed cell  →  0.0          (wasted move, opportunity cost)
+            Mine hit (loss)            →  0.0          (episode ends, no reward)
+            Safe reveal                →  new_cells / total_safe  ∈ (0, 1]
+            Win                        →  1.0          (peak of range, terminal bonus)
+
         Returns:
-            observation : (n, n, 3) uint8 array
-            reward      : float
+            observation : (n, n) uint8 array
+            reward      : float in [0.0, 1.0]
             done        : bool
         """
         if self.status != GameStatus.ONGOING:
@@ -89,64 +91,52 @@ class MinesweeperEngine:
             raise ValueError(f"({row},{col}) out of bounds for {self.n}×{self.n} grid.")
 
         self._last_action = (row, col)
+        total_safe = self.n**2 - self.mines_count
 
-        # Penalise re-clicking a revealed cell without ending the episode
+        # ── Re-click: wasted move ──────────────────────────────────────────────
         if (row, col) in self.revealed:
-            return self.observe(), -0.5, False
+            return self.observe(), 0.0, False
 
         self.step_count += 1
+        prev_revealed = len(self.revealed)
 
+        # ── Mine hit: episode ends, zero reward ───────────────────────────────
         if self.grid[row][col] == Cell.MINE:
-            self._reveal(row, col)
+            self.revealed.add((row, col))
             self.status = GameStatus.LOST
-            return self.observe(), -1.0, True
+            return self.observe(), 0.0, True
 
+        # ── Safe reveal: flood-fill, reward proportional to new cells ─────────
         self._flood_fill(row, col)
+        new_cells = len(self.revealed) - prev_revealed
+        progress_reward = new_cells / total_safe  # ∈ (0.0, 1.0]
 
+        # ── Win: cap at 1.0 ───────────────────────────────────────────────────
         if self._check_win():
             self.status = GameStatus.WON
             return self.observe(), 1.0, True
 
-        return self.observe(), 0.0, False
+        return self.observe(), progress_reward, False
 
-    def observe(self, last_action: Optional[Tuple[int, int]] = None) -> np.ndarray:
+    def observe(self) -> np.ndarray:
         """
-        (n, n, 3) uint8 observation tensor.
+        (n, n) uint8 observation tensor.
 
-        Channel 0 — hidden mask  : 1 = still unknown, 0 = revealed
-        Channel 1 — view values  : 0-8 revealed count; 255 = unknown; 16 = mine (post-loss)
-        Channel 2 — action mask  : 1 at the most-recently clicked cell
+        Values:
+            0–8  : revealed safe cell (adjacency count)
+            9    : unrevealed — mine cells also render as 9 (agent can't see mines)
+
+        Usage by agent type:
+            MLP / DQN  : obs.flatten().astype(np.float32) / 9.0
+            CNN        : obs[np.newaxis]  →  (1, n, n) for PyTorch
+            GRPO/LLM   : obs.tolist()    →  JSON-serialisable nested list
         """
-        n = self.n
-        act = last_action or self._last_action
-
-        hidden = np.array(
-            [
-                [1 if self.view[r][c] == Cell.UNKNOWN else 0 for c in range(n)]
-                for r in range(n)
-            ],
-            dtype=np.uint8,
-        )
-        view_arr = np.array(self.view, dtype=np.uint8)
-
-        action_mask = np.zeros((n, n), dtype=np.uint8)
-        if act is not None:
-            action_mask[act[0], act[1]] = 1
-
-        return np.stack([hidden, view_arr, action_mask], axis=-1)  # (n, n, 3)
-
-    def render(self) -> str:
-        """ASCII view of the current board (for debugging / logging)."""
-        symbols = {Cell.UNKNOWN: "·", Cell.MINE: "✸"}
-        lines = []
-        lines.extend(
-            "  ".join(
-                symbols.get(self.view[r][c], str(self.view[r][c]))
-                for c in range(self.n)
-            )
-            for r in range(self.n)
-        )
-        return "\n".join(lines)
+        obs = np.full((self.n, self.n), Cell.UNKNOWN, dtype=np.uint8)
+        for r, c in self.revealed:
+            v = self.grid[r][c]
+            if v != Cell.MINE:
+                obs[r, c] = v
+        return obs
 
     # ------------------------------------------------------------------ #
     #  Properties                                                          #
@@ -162,12 +152,7 @@ class MinesweeperEngine:
 
     @property
     def unrevealed_count(self) -> int:
-        return sum(
-            1
-            for r in range(self.n)
-            for c in range(self.n)
-            if (r, c) not in self.revealed
-        )
+        return self.n * self.n - len(self.revealed)
 
     # ------------------------------------------------------------------ #
     #  Board construction                                                  #
@@ -176,11 +161,9 @@ class MinesweeperEngine:
     def _build(self):
         n = self.n
         self.grid = [[0] * n for _ in range(n)]
-        self.view = [[Cell.UNKNOWN] * n for _ in range(n)]
         self.revealed = set()
         self.status = GameStatus.ONGOING
         self.step_count = 0
-        self._last_action = None
 
         self._place_mines()
         self._compute_adjacency()
@@ -217,12 +200,11 @@ class MinesweeperEngine:
             for c in range(self.n)
             if self.grid[r][c] != Cell.MINE
         ]
-        # One permanently hidden safe cell so the game isn't pre-solved
         reserved = self._rng.choice(safe)
         candidates = [cell for cell in safe if cell != reserved]
 
         for r, c in self._rng.sample(candidates, min(k, len(candidates))):
-            self._reveal(r, c)
+            self.revealed.add((r, c))
 
     # ------------------------------------------------------------------ #
     #  Core mechanics                                                      #
@@ -236,16 +218,12 @@ class MinesweeperEngine:
             r, c = queue.popleft()
             if (r, c) in self.revealed:
                 continue
-            self._reveal(r, c)
+            self.revealed.add((r, c))
             if self.grid[r][c] == 0:
                 for dr, dc in self._DIRS:
                     nr, nc = r + dr, c + dc
                     if 0 <= nr < n and 0 <= nc < n and (nr, nc) not in self.revealed:
                         queue.append((nr, nc))
-
-    def _reveal(self, r: int, c: int):
-        self.revealed.add((r, c))
-        self.view[r][c] = self.grid[r][c]
 
     def _check_win(self) -> bool:
         return self.unrevealed_count == self.mines_count
