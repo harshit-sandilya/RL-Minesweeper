@@ -23,6 +23,11 @@ _DEFAULT_SOLVE_TILES = 0
 class MinesweeperAction(Action):
     """
     A single cell click. The only action type in Minesweeper.
+
+    Attributes:
+        row (int): Row coordinate (0 to n-1)
+        col (int): Column coordinate (0 to n-1)
+
     Bounds are coarse-gated here (max grid = 10×10).
     Fine bounds (< n) are enforced by the engine's step().
     """
@@ -35,6 +40,16 @@ class MinesweeperAction(Action):
 class MinesweeperObservation(Observation):
     """
     Everything the agent sees after each step.
+
+    Attributes:
+        board (List[List[int]]): 2D game board where:
+            - 0-8: revealed safe cell (adjacency count)
+            - 9: unrevealed cell (both safe and mines)
+        n (int): Grid side length
+        mines_count (int): Total mines on board
+        unrevealed_count (int): Number of unrevealed cells
+        status (int): Game status (0=ONGOING, 1=WON, 2=LOST)
+        message (str): Human-readable step summary
 
     Inherited from Observation base:
         done   : bool
@@ -99,6 +114,15 @@ class MinesweeperObservation(Observation):
 class MinesweeperState(State):
     """
     Server-side episode metadata (not the board itself).
+
+    Attributes:
+        n (int): Grid side length (default: 8)
+        mines_count (int): Number of mines (default: 10)
+        solve_tiles (int): Curriculum difficulty level (default: 0)
+
+    Computed properties:
+        mine_density (float): mines / total_cells
+        safe_cells (int): total_safe_cells = n² - mines_count
 
     Inherited from State base:
         episode_id : Optional[str]

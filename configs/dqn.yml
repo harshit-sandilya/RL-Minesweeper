@@ -1,0 +1,29 @@
+run_name: "dqn_8x8_baseline"
+device: "cpu"
+n: 8
+mines: 10
+solve_tiles: 20
+env_url: "http://localhost:8000"
+
+total_episodes: 10000
+eval_every: 500
+eval_episodes: 20
+seed: 42
+
+log_dir: "runs"
+checkpoint_dir: "checkpoints"
+
+gamma: 0.99
+batch_size: 64
+learning_rate: 0.0001
+lr_warmup_steps: 1000
+lr_total_updates: 50000
+
+epsilon_start: 1.0
+epsilon_end: 0.1
+epsilon_decay_steps: 30000
+epsilon_schedule: "linear"
+
+replay_capacity: 100000
+min_replay_size: 1000
+target_update_freq: 1000

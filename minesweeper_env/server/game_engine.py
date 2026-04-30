@@ -172,12 +172,14 @@ class MinesweeperEngine:
             self._pre_reveal(self.solve_tiles)
 
     def _place_mines(self):
+        """Randomly place mines on the grid using the configured RNG."""
         indices = self._rng.sample(range(self.n * self.n), self.mines_count)
         for idx in indices:
             r, c = divmod(idx, self.n)
             self.grid[r][c] = Cell.MINE
 
     def _compute_adjacency(self):
+        """Compute adjacency counts (number of neighboring mines) for all safe cells."""
         n = self.n
         for r, c in itertools.product(range(n), range(n)):
             if self.grid[r][c] == Cell.MINE:
@@ -193,6 +195,9 @@ class MinesweeperEngine:
         """
         Reveal k safe tiles, keeping exactly one safe cell always hidden.
         Guarantees the agent always has at least one move remaining at start.
+
+        Args:
+            k (int): Number of safe tiles to reveal
         """
         safe = [
             (r, c)

@@ -1,1 +1,7 @@
-openenv-core
+numpy==2.4.4
+openenv_core==0.2.3
+pydantic==2.13.1
+PyYAML==6.0.3
+torch==2.11.0
+uvicorn==0.44.0
+tensorboard==2.20.0

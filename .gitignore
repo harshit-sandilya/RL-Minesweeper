@@ -1,5 +1,8 @@
 .vscode
 .venv
+.DS_Store
+checkpoints
+runs
 
 __pycache__
 *.egg-info

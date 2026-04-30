@@ -19,9 +19,14 @@ from uuid import uuid4
 
 from openenv.core.env_server.interfaces import Environment
 
-from ..models import (_DEFAULT_MINES, _DEFAULT_N, _DEFAULT_SOLVE_TILES,
-                      MinesweeperAction, MinesweeperObservation,
-                      MinesweeperState)
+from ..models import (
+    _DEFAULT_MINES,
+    _DEFAULT_N,
+    _DEFAULT_SOLVE_TILES,
+    MinesweeperAction,
+    MinesweeperObservation,
+    MinesweeperState,
+)
 from .game_engine import GameStatus, MinesweeperEngine
 
 
