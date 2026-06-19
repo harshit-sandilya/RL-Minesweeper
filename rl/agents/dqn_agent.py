@@ -82,11 +82,10 @@ class DQNAgent:
         self.env = env
         self.device = get_device(config.device)
 
-        # Store environment parameters for reset
-        self.env_params = {
+        # Store static environment parameters; solve_tiles is derived per mode.
+        self._base_env_params = {
             "n": config.n,
             "mines": config.mines,
-            "solve_tiles": config.solve_tiles,
         }
 
         set_seed(config.seed)
@@ -124,7 +123,7 @@ class DQNAgent:
         # ── Replay buffer ─────────────────────────────────────────────────
         self.replay_buffer = ReplayBuffer(
             capacity=config.replay_capacity,
-            state_shape=(1, config.n, config.n),
+            state_shape=(3, config.n, config.n),
             action_dim=config.n * config.n,
             obs_dtype=np.dtype(np.float32),
             use_action_mask=True,
@@ -141,9 +140,6 @@ class DQNAgent:
 
         # ── Rolling metrics ───────────────────────────────────────────────
         self._win_rate = RollingMean(window=100)
-
-        # FIX #1: Timer is a context manager (__enter__/__exit__).
-        # We use it per-episode via `with self._ep_timer:` in _train_episode().
         self._ep_timer = Timer()
 
         # ── Global counters ───────────────────────────────────────────────
@@ -168,39 +164,84 @@ class DQNAgent:
         print(f"Network: {self.online_net}")
         print(f"Buffer:  {self.replay_buffer}")
         print()
+        window_max_rev = 0
+        window_max_rev_ratio = 0.0
 
         for ep in range(1, self.config.total_episodes + 1):
             self._episode = ep
-            ep_reward, ep_steps, won = self._train_episode()
-
-            self._win_rate.push(float(won))
+            stats = self._train_episode()
+            self._win_rate.push(float(stats["win"]))
             mine_density = self.config.mines / (self.config.n**2)
+            window_max_rev = max(window_max_rev, stats["revealed_safe"])
+            window_max_rev_ratio = max(window_max_rev_ratio, stats["revealed_ratio"])
 
             self.logger.log_scalars(
                 {
-                    "train/episode_reward": ep_reward,
+                    "train/episode_reward": stats["reward"],
                     "train/win_rate": self._win_rate.mean(),
                     "train/mine_density": mine_density,
-                    "train/steps_per_ep": ep_steps,
+                    "train/steps_per_ep": stats["steps"],
                     "train/epsilon": self.eps_scheduler.get(self._global_step),
+                    "train/solve_tiles": stats["solve_tiles"],
+                    "train/revealed_ratio": stats["revealed_ratio"],
+                    "train/final_unrevealed": stats["final_unrevealed"],
+                    "train/remaining_safe": stats["remaining_safe"],
                 },
                 step=ep,
             )
+
+            if ep % 100 == 0:
+                print(
+                    f"[Train Ep {ep:6d}]  "
+                    f"R={stats['reward']:+.2f} | "
+                    f"Win={self._win_rate.mean():.2f} | "
+                    f"RevRatio={stats['revealed_ratio']:.3f} | "
+                    f"RemSafe={int(stats['remaining_safe']):02d} | "
+                    f"MaxRev={int(window_max_rev):02d} | "
+                    f"MaxRatio={window_max_rev_ratio:.3f} | "
+                    f"Q={stats['q_mean']:.2f} | "
+                    f"Qmax={stats['q_max']:.2f} | "
+                    f"ε={self.eps_scheduler.get(self._global_step):.3f} | "
+                    f"solve={int(stats['solve_tiles'])} | "
+                    f"lr={self.algo.current_lr:.2e} | "
+                    f"upd={self.algo.update_count}"
+                )
+                window_max_rev = 0
+                window_max_rev_ratio = 0.0
 
             if ep % self.config.eval_every == 0:
                 eval_results = self.evaluate(self.config.eval_episodes)
                 eval_reward = float(np.mean([r["reward"] for r in eval_results]))
                 eval_win_rate = float(np.mean([r["win"] for r in eval_results]))
+                eval_rev_ratio = float(
+                    np.mean([r["revealed_ratio"] for r in eval_results])
+                )
+                eval_max_rev = float(
+                    np.max([r["revealed_ratio"] for r in eval_results])
+                )
+                eval_rem_safe = float(
+                    np.mean([r["remaining_safe"] for r in eval_results])
+                )
+                eval_unrevealed = float(
+                    np.mean([r["final_unrevealed"] for r in eval_results])
+                )
+                eval_q_mean = float(np.mean([r["q_mean"] for r in eval_results]))
+                eval_q_max = float(np.max([r["q_max"] for r in eval_results]))
 
                 self.logger.log_scalars(
                     {
                         "eval/episode_reward": eval_reward,
                         "eval/win_rate": eval_win_rate,
+                        "eval/revealed_ratio": eval_rev_ratio,
+                        "eval/max_revealed_ratio": eval_max_rev,
+                        "eval/remaining_safe": eval_rem_safe,
+                        "eval/final_unrevealed": eval_unrevealed,
+                        "eval/q_mean": eval_q_mean,
+                        "eval/q_max": eval_q_max,
                     },
                     step=ep,
                 )
 
-                # FIX #6: use checkpoint_path() for consistent zero-padded filenames
                 save_checkpoint(
                     path=checkpoint_path(
                         self.config.checkpoint_dir,
@@ -216,21 +257,10 @@ class DQNAgent:
                         "win_rate": self._win_rate.mean(),
                         "eval_win_rate": eval_win_rate,
                         "algo": "dqn",
+                        "eval_rev_ratio": eval_rev_ratio,
                     },
                 )
 
-                print(
-                    f"[Ep {ep:6d}]  "
-                    f"reward={ep_reward:+.2f}  "
-                    f"win={self._win_rate.mean():.2f}  "
-                    f"eval_win={eval_win_rate:.2f}  "
-                    f"ε={self.eps_scheduler.get(self._global_step):.3f}  "
-                    f"lr={self.algo.current_lr:.2e}  "
-                    f"updates={self.algo.update_count}"
-                )
-
-        # FIX #5: dump_summary() and close() are OUTSIDE the for loop.
-        # They must run exactly once after all episodes complete.
         self.logger.dump_summary()
         self.logger.close()
         print("Training complete.")
@@ -242,33 +272,45 @@ class DQNAgent:
         Run one training episode.
 
         Returns:
-            (total_reward, steps_taken, won)
+            Dictionary containing metrics for the episode.
         """
         # Use the sync context manager properly
         with self.env.sync() as env:
-            obs_result = env.reset(**self.env_params)
+            current_solve_tiles = self._training_solve_tiles()
+            obs_result = env.reset(
+                **self._base_env_params,
+                solve_tiles=current_solve_tiles,
+            )
             obs = obs_result.observation
             done = False
             ep_reward = 0.0
             ep_steps = 0
+            max_revealed = 0
+            unique_actions = set()
+            mine_hit = False
+            ep_q_means = []
+            ep_target_maxes = []
 
-            # FIX #2: initialise info before the loop so it's always defined,
-            # even if the episode ends on the very first step (done=True on reset).
-            info = {}
-
-            # FIX #1: Timer used as context manager — starts on __enter__,
-            # records elapsed_ms on __exit__. ep_wall_time is read after the block.
             with self._ep_timer:
                 while not done:
                     epsilon = self.eps_scheduler.get(self._global_step)
                     action_idx = self._select_action(obs, epsilon)
 
+                    unique_actions.add(action_idx)
                     action = self._idx_to_action(action_idx)
                     step_result = env.step(action)
                     next_obs = step_result.observation
                     reward = step_result.reward
                     done = step_result.done
-                    info = getattr(step_result, "info", {})
+
+                    revealed_safe = (
+                        next_obs.n * next_obs.n
+                        - next_obs.mines_count
+                        - next_obs.unrevealed_count
+                    )
+                    max_revealed = max(max_revealed, revealed_safe)
+                    if done and next_obs.status == 2:
+                        mine_hit = True
 
                     self.replay_buffer.push(
                         state=obs.spatial,
@@ -292,6 +334,8 @@ class DQNAgent:
                             self.config.batch_size, self.device
                         )
                         result = self.algo.update(batch)
+                        ep_q_means.append(result.current_q_mean)
+                        ep_target_maxes.append(result.target_q_max)
 
                         if self._global_step % self.config.target_update_freq == 0:
                             self.algo.sync_target()
@@ -300,19 +344,41 @@ class DQNAgent:
                             {
                                 "train/loss": result.loss,
                                 "train/q_mean": result.q_mean,
+                                "train/current_q_mean": result.current_q_mean,
+                                "train/target_q_mean": result.target_q_mean,
+                                "train/target_q_max": result.target_q_max,
                                 "train/lr": self.algo.current_lr,
                             },
                             step=self._global_step,
                         )
 
-        won = info.get("won", False)
+        won = int(obs.status == 1)
+        total_safe = obs.n * obs.n - obs.mines_count
+        revealed_ratio = max_revealed / total_safe
+        final_unrevealed = obs.unrevealed_count
+        remaining_safe = total_safe - max_revealed
+        revealed_ratio = max_revealed / total_safe if total_safe > 0 else 0.0
 
         self.logger.log_scalars(
             {"perf/wall_time_per_ep": self._ep_timer.elapsed_ms},
             step=self._episode,
         )
 
-        return ep_reward, ep_steps, won
+        return {
+            "reward": ep_reward,
+            "steps": ep_steps,
+            "win": won,
+            "solve_tiles": current_solve_tiles,
+            "revealed_safe": max_revealed,
+            "total_safe": total_safe,
+            "revealed_ratio": revealed_ratio,
+            "final_unrevealed": final_unrevealed,
+            "remaining_safe": remaining_safe,
+            "unique_actions": len(unique_actions),
+            "mine_hit": mine_hit,
+            "q_mean": float(np.mean(ep_q_means)) if ep_q_means else 0.0,
+            "q_max": float(np.mean(ep_target_maxes)) if ep_target_maxes else 0.0,
+        }
 
     # ── Action selection ───────────────────────────────────────────────────────
     def _select_action(self, obs, epsilon: float) -> int:
@@ -346,22 +412,18 @@ class DQNAgent:
 
         return int(np.argmax(masked_q))
 
-    def _greedy_action(self, obs) -> int:
+    def _greedy_action(self, obs) -> tuple[int, float]:
         """
         Pure greedy action selection (epsilon = 0) with action masking.
-
         Factored out of _select_action so evaluate() can call it directly
         without carrying epsilon or building a separate standalone function.
-
-        Identical to _select_action(obs, epsilon=0.0) but without the
-        random branch — no np.random call, no network.train() toggle needed
-        since evaluate() keeps the network in eval() mode throughout.
+        Returns both the selected action and its corresponding Q-value.
 
         Args:
             obs: MinesweeperObservation with .spatial and .action_mask.
 
         Returns:
-            Flat cell index in [0, n*n).
+            (Flat cell index in [0, n*n), corresponding Q-value float)
         """
         valid_actions = np.where(obs.action_mask)[0]
         state = from_numpy(obs.spatial).unsqueeze(0).to(self.device)
@@ -369,7 +431,8 @@ class DQNAgent:
             q_values = self.online_net(state).cpu().numpy()[0]
         masked_q = np.full_like(q_values, -np.inf)
         masked_q[valid_actions] = q_values[valid_actions]
-        return int(np.argmax(masked_q))
+        best_action = int(np.argmax(masked_q))
+        return best_action, float(masked_q[best_action])
 
     # ── Evaluation ────────────────────────────────────────────────────────────
     def evaluate(self, n_episodes: int) -> list[dict]:
@@ -386,43 +449,72 @@ class DQNAgent:
             n_episodes: Number of greedy episodes to run.
 
         Returns:
-            List of dicts, one per episode:
-                {"reward": float, "steps": int, "win": int (0|1)}
+            List of dicts, one per episode containing detailed metrics.
         """
         self.online_net.eval()
         results = []
 
         for ep in range(1, n_episodes + 1):
             with self.env.sync() as env:
-                obs_result = env.reset(**self.env_params)
+                obs_result = env.reset(
+                    **self._base_env_params,
+                    solve_tiles=0,
+                )
                 obs = obs_result.observation
                 done = False
                 ep_reward = 0.0
                 ep_steps = 0
-                info: dict = {}
+                max_revealed = 0
+                q_vals_ep = []
 
                 while not done:
-                    action_idx = self._greedy_action(obs)
+                    action_idx, q_val = self._greedy_action(obs)
+                    q_vals_ep.append(q_val)
                     step_result = env.step(self._idx_to_action(action_idx))
                     obs = step_result.observation
                     ep_reward += step_result.reward
                     done = step_result.done
-                    info = getattr(step_result, "info", {})
                     ep_steps += 1
+                    revealed_safe = (
+                        obs.n * obs.n - obs.mines_count - obs.unrevealed_count
+                    )
+                    max_revealed = max(max_revealed, revealed_safe)
 
-            results.append(
-                {
-                    "reward": ep_reward,
-                    "steps": ep_steps,
-                    "win": int(info.get("won", False)),
-                }
-            )
+                total_safe = obs.n * obs.n - obs.mines_count
+                final_unrevealed = obs.unrevealed_count
+                remaining_safe = total_safe - max_revealed
+                revealed_ratio = max_revealed / total_safe if total_safe > 0 else 0.0
+                results.append(
+                    {
+                        "reward": ep_reward,
+                        "steps": ep_steps,
+                        "win": int(obs.status == 1),
+                        "revealed_safe": max_revealed,
+                        "total_safe": total_safe,
+                        "revealed_ratio": revealed_ratio,
+                        "final_unrevealed": final_unrevealed,
+                        "remaining_safe": remaining_safe,
+                        "q_mean": float(np.mean(q_vals_ep)) if q_vals_ep else 0.0,
+                        "q_max": float(np.max(q_vals_ep)) if q_vals_ep else 0.0,
+                    }
+                )
 
             if ep % max(1, n_episodes // 10) == 0 or ep == n_episodes:
                 wr = sum(r["win"] for r in results) / len(results)
                 w = len(str(n_episodes))
+                avg_rev = np.mean([r["revealed_ratio"] for r in results])
+                avg_rem = np.mean([r["remaining_safe"] for r in results])
+                avg_q = np.mean([r["q_mean"] for r in results])
+                avg_q_max = np.mean([r["q_max"] for r in results])
+                max_rev = np.max([r["revealed_safe"] for r in results])
+                max_rev_ratio = np.max([r["revealed_ratio"] for r in results])
                 print(
-                    f"  [eval] ep {ep:{w}d}/{n_episodes}  win_rate={wr:.3f}", end="\r"
+                    f"  [Eval] ep {ep:{w}d}/{n_episodes} | "
+                    f"Win={wr:.3f} | RevRatio={avg_rev:.3f} | "
+                    f"RemSafe={avg_rem:.1f} | "
+                    f"MaxRev={int(max_rev):02d} | MaxRatio={max_rev_ratio:.3f} | "
+                    f"Q={avg_q:.2f} | Qmax={avg_q_max:.2f}",
+                    end="\r",
                 )
 
         print()
@@ -430,6 +522,32 @@ class DQNAgent:
         return results
 
     # ── Helpers ────────────────────────────────────────────────────────────────
+
+    def _training_solve_tiles(self) -> int:
+        """
+        Training curriculum schedule over global environment steps.
+
+        - Hold `solve_tiles` constant until curriculum_hold_steps.
+        - Linearly decay to 0 by curriculum_end_steps.
+        - If curriculum is disabled, keep solve_tiles fixed.
+        """
+        start = max(0, int(self.config.solve_tiles))
+
+        if not self.config.curriculum_enabled or start == 0:
+            return start
+
+        hold_steps = max(0, int(self.config.curriculum_hold_steps))
+        end_steps = max(hold_steps, int(self.config.curriculum_end_steps))
+        step = self._global_step
+
+        if step <= hold_steps:
+            return start
+        if step >= end_steps:
+            return 0
+
+        progress = (step - hold_steps) / max(1, end_steps - hold_steps)
+        value = start * (1.0 - progress)
+        return max(0, int(np.ceil(value)))
 
     def _idx_to_action(self, idx: int) -> MinesweeperAction:
         """

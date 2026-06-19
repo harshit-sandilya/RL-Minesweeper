@@ -19,13 +19,13 @@ Endpoints:
 
 Usage:
     # Development (with auto-reload):
-    uvicorn server.app:app --reload --host 0.0.0.0 --port 8000
+    uvicorn server.app:app --reload --host 0.0.0.0 --port 9090
 
     # Production:
-    uvicorn server.app:app --host 0.0.0.0 --port 8000 --workers 4
+    uvicorn server.app:app --host 0.0.0.0 --port 9090 --workers 4
 
     # Or run directly:
-    python -m server.app
+    python -m server.app --port 9090
 """
 
 try:
@@ -53,7 +53,7 @@ app = create_app(
 )
 
 
-def main(host: str = "0.0.0.0", port: int = 8000):
+def main(host: str = "0.0.0.0", port: int = 9090):
     """
     Entry point for direct execution via uv run or python -m.
 
@@ -64,7 +64,7 @@ def main(host: str = "0.0.0.0", port: int = 8000):
 
     Args:
         host: Host address to bind to (default: "0.0.0.0")
-        port: Port number to listen on (default: 8000)
+        port: Port number to listen on (default: 9090)
 
     For production deployments, consider using uvicorn directly with
     multiple workers:
@@ -79,6 +79,6 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--port", type=int, default=9090)
     args = parser.parse_args()
     main(port=args.port)

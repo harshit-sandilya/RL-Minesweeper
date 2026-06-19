@@ -136,24 +136,29 @@ class MinesweeperConfig(Config):
 
     All base Config fields are inherited and remain available.
     Only fields that are meaningless outside a Minesweeper context
-    live here — grid dimensions, mine count, server URL, curriculum.
+    live here — grid dimensions, mine count, server URL, and the
+    training-only solve_tiles schedule.
 
-    Example YAML (configs/config_dqn.yml):
-        n:           8
-        mines:       10
-        solve_tiles: 20
-        env_url:     "http://localhost:8000"
+    Example YAML (configs/dqn.yml):
+        n: 8
+        mines: 10
+        solve_tiles: 6
+        curriculum_enabled: true
+        curriculum_hold_steps: 20000
+        curriculum_end_steps: 80000
+        env_url: "http://localhost:9090"
         # ... plus any base Config fields to override ...
     """
 
     # ── Environment identity ───────────────────────────────────────────────
-    env_url: str = "http://localhost:8000"  # OpenEnv server base URL
+    env_url: str = "http://localhost:9090"  # OpenEnv server base URL
 
     # ── Board geometry ─────────────────────────────────────────────────────
     n: int = 8  # grid side length (4–16)
     mines: int = 10  # number of mines on the board
 
-    # ── Curriculum ─────────────────────────────────────────────────────────
-    solve_tiles: int = 0  # safe cells pre-revealed at episode start
-    # env curriculum reduces this automatically on wins
-    # 0 = full difficulty (no assistance)
+    # ── Curriculum (training-only) ────────────────────────────────────────
+    solve_tiles: int = 0  # starting solve_tiles for training episodes
+    curriculum_enabled: bool = False
+    curriculum_hold_steps: int = 20_000  # keep solve_tiles fixed up to this step
+    curriculum_end_steps: int = 80_000  # linearly decay solve_tiles to 0 by this step

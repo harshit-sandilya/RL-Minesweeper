@@ -4,10 +4,11 @@ import numpy as np
 import torch
 
 from minesweeper_env import MinesweeperEnv
+
+# from rl.agents.double_dqn_agent import DoubleDQNAgent
 from rl.agents.dqn_agent import DQNAgent
 from rl.common.checkpoint import load_checkpoint
 from rl.common.config import MinesweeperConfig
-from rl.networks.cnn_network import MinesweeperCNN
 
 
 def _compute_stats(results: list[dict]) -> dict:
@@ -82,10 +83,13 @@ def main() -> None:
     }
     cfg = MinesweeperConfig(**valid) if valid else MinesweeperConfig()
 
-    network = MinesweeperCNN(n=cfg.n, hidden_dim=256).eval()
-    ckpt_info = load_checkpoint(args.checkpoint, network)
     env = MinesweeperEnv(base_url=cfg.env_url)
+    # agent = DoubleDQNAgent(cfg, env)
     agent = DQNAgent(cfg, env)
+
+    ckpt_info = load_checkpoint(args.checkpoint, agent.online_net)
+    agent.algo.sync_target()
+
     results = agent.evaluate(n_episodes=args.episodes)
 
     stats = _compute_stats(results)

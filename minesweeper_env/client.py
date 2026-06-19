@@ -8,9 +8,7 @@ from typing import Dict
 from openenv.core.client_types import StepResult
 from openenv.core.env_client import EnvClient
 
-from .models import (_DEFAULT_MINES, _DEFAULT_N, _DEFAULT_SOLVE_TILES,
-                     MinesweeperAction, MinesweeperObservation,
-                     MinesweeperState)
+from .models import MinesweeperAction, MinesweeperObservation, MinesweeperState
 
 
 class MinesweeperEnv(
@@ -22,33 +20,28 @@ class MinesweeperEnv(
     Each instance is a fully isolated session — spin up N clients
     for N parallel agents with zero shared state.
 
-    The client only knows about models.py — it never imports from
-    server/ (that code runs inside the Docker container).
+    The client only knows about `models.py` — it never imports from
+    `server/` (that code runs inside the environment service).
+
+    Every episode reset must provide explicit environment parameters:
+    `n`, `mines`, and `solve_tiles`.
 
     ── Sync usage (scripts / notebooks) ─────────────────────────────────
-        with MinesweeperEnv(base_url="http://localhost:8000").sync as env:
+        with MinesweeperEnv(base_url="http://localhost:9090").sync() as env:
             result = env.reset(n=8, mines=10, solve_tiles=3)
-            obs    = result.observation          # MinesweeperObservation
+            obs = result.observation
 
             while not result.done:
-                # DQN example — pick highest Q-value unrevealed cell
-                import numpy as np
-                action_idx = obs.action_mask.argmax()   # simplest valid policy
-                row, col   = divmod(int(action_idx), obs.n)
-                result     = env.step(MinesweeperAction(row=row, col=col))
+                action_idx = int(obs.action_mask.argmax())
+                row, col = divmod(action_idx, obs.n)
+                result = env.step(MinesweeperAction(row=row, col=col))
+                obs = result.observation
 
     ── Async usage (parallel training) ──────────────────────────────────
-        async with MinesweeperEnv(base_url="http://localhost:8000") as env:
-            result = await env.reset(n=6, mines=6)
+        async with MinesweeperEnv(base_url="http://localhost:9090") as env:
+            result = await env.reset(n=6, mines=6, solve_tiles=0)
             result = await env.step(MinesweeperAction(row=0, col=0))
-            state  = await env.state          # MinesweeperState (curriculum info)
-
-    ── Docker ────────────────────────────────────────────────────────────
-        env = MinesweeperEnv.from_docker_image("minesweeper-env:latest")
-        try:
-            result = env.sync.reset(n=8, mines=10, solve_tiles=5)
-        finally:
-            env.close()
+            state = await env.state          # MinesweeperState for active episode
 
     ── HuggingFace Space ─────────────────────────────────────────────────
         env = MinesweeperEnv(base_url="https://<user>-minesweeper-env.hf.space")
@@ -92,23 +85,24 @@ class MinesweeperEnv(
                 }
             }
         """
-        obs_data = payload.get("observation", {})
+        obs_data = payload["observation"]
+        board = obs_data["board"]
 
         observation = MinesweeperObservation(
-            done=payload.get("done", False),
+            done=payload["done"],
             reward=payload.get("reward"),
-            board=obs_data.get("board", []),
-            n=obs_data.get("n", _DEFAULT_N),
-            mines_count=obs_data.get("mines_count", _DEFAULT_MINES),
-            unrevealed_count=obs_data.get("unrevealed_count", 0),
-            status=int(obs_data.get("status", 0)),
-            message=obs_data.get("message", ""),
+            board=board,
+            n=int(obs_data["n"]),
+            mines_count=int(obs_data["mines_count"]),
+            unrevealed_count=int(obs_data["unrevealed_count"]),
+            status=int(obs_data["status"]),
+            message=obs_data["message"],
         )
 
         return StepResult(
             observation=observation,
             reward=payload.get("reward"),
-            done=payload.get("done", False),
+            done=payload["done"],
         )
 
     # ------------------------------------------------------------------ #
@@ -119,15 +113,15 @@ class MinesweeperEnv(
         """
         Raw WebSocket payload → MinesweeperState.
 
-        Carries curriculum metadata (solve_tiles, mine_density, safe_cells)
-        in addition to the base episode_id and step_count.
-        mine_density and safe_cells are computed_fields — not sent over wire,
-        derived automatically from n and mines_count after construction.
+        Carries episode metadata (`n`, `mines_count`, `solve_tiles`)
+        in addition to the base `episode_id` and `step_count`.
+        `mine_density` and `safe_cells` are computed_fields — not sent over
+        the wire, derived automatically from `n` and `mines_count`.
         """
         return MinesweeperState(
             episode_id=payload.get("episode_id"),
-            step_count=payload.get("step_count", 0),
-            n=payload.get("n", _DEFAULT_N),
-            mines_count=payload.get("mines_count", _DEFAULT_MINES),
-            solve_tiles=payload.get("solve_tiles", _DEFAULT_SOLVE_TILES),
+            step_count=int(payload["step_count"]),
+            n=int(payload["n"]),
+            mines_count=int(payload["mines_count"]),
+            solve_tiles=int(payload["solve_tiles"]),
         )

@@ -30,7 +30,7 @@ class MinesweeperEngine:
     Args:
         n           : grid side length (4–10)
         mines       : number of mines
-        solve_tiles : safe tiles pre-revealed at reset (curriculum difficulty)
+        solve_tiles : safe tiles pre-revealed on the first move of the episode
         seed        : optional RNG seed for reproducibility
     """
 
@@ -56,6 +56,7 @@ class MinesweeperEngine:
         self.revealed: set[Tuple[int, int]] = set()
         self.status: GameStatus = GameStatus.ONGOING
         self.step_count: int = 0
+        self._mines_initialized = False
 
         self._build()
 
@@ -74,11 +75,11 @@ class MinesweeperEngine:
         """
         Uncover cell (row, col).
 
-        Reward design — all values in [0.0, 1.0]:
-            Re-click on revealed cell  →  0.0          (wasted move, opportunity cost)
-            Mine hit (loss)            →  0.0          (episode ends, no reward)
-            Safe reveal                →  new_cells / total_safe  ∈ (0, 1]
-            Win                        →  1.0          (peak of range, terminal bonus)
+        Reward design:
+            Re-click on revealed cell  →  -0.1
+            Mine hit (loss)            →  -1.0
+            Safe reveal                →  new_cells / total_safe
+            Win                        →  10.0
 
         Returns:
             observation : (n, n) uint8 array
@@ -91,32 +92,47 @@ class MinesweeperEngine:
             raise ValueError(f"({row},{col}) out of bounds for {self.n}×{self.n} grid.")
 
         self._last_action = (row, col)
-        total_safe = self.n**2 - self.mines_count
 
         # ── Re-click: wasted move ──────────────────────────────────────────────
         if (row, col) in self.revealed:
-            return self.observe(), 0.0, False
+            return self.observe(), -0.1, False
+            # return self.observe(), 0, False
 
         self.step_count += 1
         prev_revealed = len(self.revealed)
+        total_safe = self.n**2 - self.mines_count
+
+        # ── First click safety & Board Generation ──────────────────────────────
+        is_first_click = not self._mines_initialized
+        if is_first_click:
+            self._place_mines_excluding(row, col)
+            self._compute_adjacency()
+            self._mines_initialized = True
 
         # ── Mine hit: episode ends, zero reward ───────────────────────────────
         if self.grid[row][col] == Cell.MINE:
             self.revealed.add((row, col))
             self.status = GameStatus.LOST
-            return self.observe(), 0.0, True
+            return self.observe(), -1.0, True
+            # return self.observe(), 0.0, True
 
         # ── Safe reveal: flood-fill, reward proportional to new cells ─────────
         self._flood_fill(row, col)
-        new_cells = len(self.revealed) - prev_revealed
-        progress_reward = new_cells / total_safe  # ∈ (0.0, 1.0]
 
-        # ── Win: cap at 1.0 ───────────────────────────────────────────────────
+        # ── Pre-revealed hint tiles: apply only on the first click ─────────────
+        if is_first_click and self.solve_tiles > 0:
+            self._pre_reveal(self.solve_tiles)
+
+        newly_revealed = len(self.revealed) - prev_revealed
+        progress_reward = newly_revealed / total_safe
+
+        # ── Win ───────────────────────────────────────────────────────────────
         if self._check_win():
             self.status = GameStatus.WON
-            return self.observe(), 1.0, True
+            return self.observe(), 10.0, True
 
         return self.observe(), progress_reward, False
+        # return self.observe(), 0.2, False
 
     def observe(self) -> np.ndarray:
         """
@@ -164,18 +180,35 @@ class MinesweeperEngine:
         self.revealed = set()
         self.status = GameStatus.ONGOING
         self.step_count = 0
-
-        self._place_mines()
-        self._compute_adjacency()
-
-        if self.solve_tiles > 0:
-            self._pre_reveal(self.solve_tiles)
+        self._mines_initialized = False
 
     def _place_mines(self):
         """Randomly place mines on the grid using the configured RNG."""
         indices = self._rng.sample(range(self.n * self.n), self.mines_count)
         for idx in indices:
             r, c = divmod(idx, self.n)
+            self.grid[r][c] = Cell.MINE
+
+    def _place_mines_excluding(self, start_r: int, start_c: int):
+        exclude_cells = {(start_r, start_c)}
+        for dr, dc in self._DIRS:
+            r, c = start_r + dr, start_c + dc
+            if 0 <= r < self.n and 0 <= c < self.n:
+                exclude_cells.add((r, c))
+
+        available_cells = [(r, c) for r in range(self.n) for c in range(self.n)]
+        safe_candidates = [
+            cell for cell in available_cells if cell not in exclude_cells
+        ]
+
+        if len(safe_candidates) < self.mines_count:
+            exclude_cells = {(start_r, start_c)}
+            safe_candidates = [
+                cell for cell in available_cells if cell not in exclude_cells
+            ]
+
+        mine_cells = self._rng.sample(safe_candidates, self.mines_count)
+        for r, c in mine_cells:
             self.grid[r][c] = Cell.MINE
 
     def _compute_adjacency(self):
@@ -199,14 +232,18 @@ class MinesweeperEngine:
         Args:
             k (int): Number of safe tiles to reveal
         """
-        safe = [
+        safe_unrevealed = [
             (r, c)
             for r in range(self.n)
             for c in range(self.n)
-            if self.grid[r][c] != Cell.MINE
+            if self.grid[r][c] != Cell.MINE and (r, c) not in self.revealed
         ]
-        reserved = self._rng.choice(safe)
-        candidates = [cell for cell in safe if cell != reserved]
+
+        if not safe_unrevealed:
+            return
+
+        reserved = self._rng.choice(safe_unrevealed)
+        candidates = [cell for cell in safe_unrevealed if cell != reserved]
 
         for r, c in self._rng.sample(candidates, min(k, len(candidates))):
             self.revealed.add((r, c))

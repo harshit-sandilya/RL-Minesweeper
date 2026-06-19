@@ -5,11 +5,8 @@ Minesweeper Environment Implementation.
 
 Wraps MinesweeperEngine in the OpenEnv Environment interface.
 
-Curriculum logic:
-    solve_tiles starts at whatever reset() receives.
-    Every time the agent wins _win_threshold episodes in a row,
-    solve_tiles is reduced by _solve_tiles_step (floor: 0).
-    At solve_tiles=0 the agent plays unassisted — full difficulty.
+The environment itself is stateless with respect to curriculum progression:
+`solve_tiles` for each episode is supplied explicitly by the caller on reset().
 """
 
 from __future__ import annotations
@@ -19,49 +16,23 @@ from uuid import uuid4
 
 from openenv.core.env_server.interfaces import Environment
 
-from ..models import (
-    _DEFAULT_MINES,
-    _DEFAULT_N,
-    _DEFAULT_SOLVE_TILES,
-    MinesweeperAction,
-    MinesweeperObservation,
-    MinesweeperState,
-)
+from ..models import MinesweeperAction, MinesweeperObservation, MinesweeperState
 from .game_engine import GameStatus, MinesweeperEngine
 
 
 class MinesweeperEnvironment(Environment):
     """
-    Minesweeper RL environment with built-in solve_tiles curriculum.
+    Minesweeper RL environment.
 
-    Curriculum behaviour:
-        - reset() sets the starting solve_tiles for the run.
-        - Each win increments an internal consecutive-win counter.
-        - When counter reaches win_threshold, solve_tiles drops by
-          solve_tiles_step (minimum 0) and the counter resets.
-        - Losses leave the counter unchanged — agent must win to progress.
-
-    Args:
-        win_threshold    : consecutive wins needed to advance curriculum (default 3)
-        solve_tiles_step : how much to reduce solve_tiles per advancement (default 1)
+    The server applies whatever `(n, mines, solve_tiles)` the caller provides
+    on `reset()` and does not mutate episode difficulty across resets.
     """
 
     SUPPORTS_CONCURRENT_SESSIONS: bool = True
 
-    def __init__(
-        self,
-        win_threshold: int = 3,
-        solve_tiles_step: int = 1,
-    ):
+    def __init__(self):
         self._engine: Optional[MinesweeperEngine] = None
-
-        # Curriculum state — persists across episodes, reset by reset()
-        self._win_threshold = win_threshold
-        self._solve_tiles_step = solve_tiles_step
-        self._consecutive_wins = 0
-        self._curriculum_solve_tiles = _DEFAULT_SOLVE_TILES  # managed internally
-
-        self._state = MinesweeperState()
+        self._state: Optional[MinesweeperState] = None
 
     # ------------------------------------------------------------------ #
     #  reset                                                               #
@@ -71,30 +42,28 @@ class MinesweeperEnvironment(Environment):
         self,
         seed: Optional[int] = None,
         episode_id: Optional[str] = None,
-        n: int = _DEFAULT_N,
-        mines: int = _DEFAULT_MINES,
-        solve_tiles: Optional[int] = None,
         **kwargs,
     ) -> MinesweeperObservation:
         """
         Start a new episode.
 
         Args:
-            n           : grid side-length (4–10)
-            mines       : number of mines
-            solve_tiles : override curriculum solve_tiles for this episode.
-                          Pass None (default) to let the curriculum manage it.
-                          Pass an explicit int to force a specific difficulty
-                          and also seed the curriculum counter from that value.
+            n           : grid side-length (4–10), required in kwargs
+            mines       : number of mines, required in kwargs
+            solve_tiles : number of safe tiles pre-revealed for this episode,
+                          required in kwargs and passed explicitly by the caller
             seed        : RNG seed for reproducibility
             episode_id  : explicit episode ID (auto-generated if omitted)
         """
-        # If caller passes an explicit solve_tiles, treat it as a curriculum reset
-        if solve_tiles is not None:
-            self._curriculum_solve_tiles = solve_tiles
-            self._consecutive_wins = 0
+        try:
+            n = int(kwargs["n"])
+            mines = int(kwargs["mines"])
+            solve_tiles = int(kwargs["solve_tiles"])
+        except KeyError as exc:
+            missing = exc.args[0]
+            raise ValueError(f"Missing required reset parameter: {missing}") from exc
 
-        effective_solve_tiles = self._curriculum_solve_tiles
+        effective_solve_tiles = solve_tiles
 
         self._engine = MinesweeperEngine(
             n=n,
@@ -124,7 +93,7 @@ class MinesweeperEnvironment(Environment):
             message=(
                 f"New {n}×{n} board | {mines} mines | "
                 f"solve_tiles={effective_solve_tiles} "
-                f"({'full difficulty' if effective_solve_tiles == 0 else f'curriculum tier {effective_solve_tiles}'})"
+                f"({'no pre-revealed hints' if effective_solve_tiles == 0 else f'{effective_solve_tiles} pre-revealed safe tiles'})"
             ),
         )
 
@@ -146,23 +115,12 @@ class MinesweeperEnvironment(Environment):
             new_cells / total_safe   — safe reveal, proportional progress
             0.0                      — mine hit (done) or re-click
         """
-        if self._engine is None:
+        if self._engine is None or self._state is None:
             raise RuntimeError("Call reset() before step().")
 
         self._state.step_count += 1
 
         obs_array, reward, done = self._engine.step(action.row, action.col)
-
-        # ── Curriculum advancement ────────────────────────────────────────
-        if done:
-            if self._engine.won:
-                self._consecutive_wins += 1
-                if self._consecutive_wins >= self._win_threshold:
-                    self._curriculum_solve_tiles = max(
-                        0, self._curriculum_solve_tiles - self._solve_tiles_step
-                    )
-                    self._consecutive_wins = 0
-                    self._state.solve_tiles = self._curriculum_solve_tiles
 
         status = self._engine.status
 
@@ -179,9 +137,7 @@ class MinesweeperEnvironment(Environment):
                 row=action.row,
                 col=action.col,
                 engine=self._engine,
-                consecutive_wins=self._consecutive_wins,
-                curriculum_solve_tiles=self._curriculum_solve_tiles,
-                win_threshold=self._win_threshold,
+                solve_tiles=self._state.solve_tiles,
             ),
         )
 
@@ -192,9 +148,11 @@ class MinesweeperEnvironment(Environment):
     @property
     def state(self) -> MinesweeperState:
         """
-        Exposes curriculum progress alongside episode metadata.
-        mine_density and safe_cells are computed_fields on MinesweeperState.
+        Exposes episode metadata for the active board.
+        `mine_density` and `safe_cells` are computed_fields on `MinesweeperState`.
         """
+        if self._state is None:
+            raise RuntimeError("Call reset() before accessing state.")
         return self._state
 
 
@@ -206,28 +164,12 @@ def _status_message(
     row: int,
     col: int,
     engine: MinesweeperEngine,
-    consecutive_wins: int,
-    curriculum_solve_tiles: int,
-    win_threshold: int,
+    solve_tiles: int,
 ) -> str:
     if status == GameStatus.WON:
-        streak_msg = (
-            f" Streak: {consecutive_wins}/{win_threshold}."
-            if consecutive_wins > 0
-            else ""
-        )
-        tier_msg = (
-            f" Next episode: solve_tiles={curriculum_solve_tiles}."
-            if curriculum_solve_tiles >= 0
-            else ""
-        )
-        return f"Won in {engine.step_count} steps!{streak_msg}{tier_msg}"
+        return f"Won in {engine.step_count} steps! solve_tiles={solve_tiles}."
 
     if status == GameStatus.LOST:
-        return (
-            f"Mine at ({row},{col}). "
-            f"{engine.step_count} steps taken. "
-            f"Win streak: {consecutive_wins}/{win_threshold}."
-        )
+        return f"Mine at ({row},{col}). {engine.step_count} steps taken."
 
     return f"({row},{col}) revealed. {engine.unrevealed_count} cells remain."

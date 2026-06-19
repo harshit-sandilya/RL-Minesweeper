@@ -84,6 +84,9 @@ class UpdateResult:
 
     loss: float
     q_mean: float
+    current_q_mean: float
+    target_q_mean: float
+    target_q_max: float
 
 
 # ── Algorithm ──────────────────────────────────────────────────────────────────
@@ -169,26 +172,19 @@ class DQN:
         # online_net produces Q-values for ALL actions; gather selects
         # only the action that was actually taken.
         all_q = self.online_net(states)  # (B, num_actions)
-        current_q = all_q.gather(
-            1,
-            actions.unsqueeze(1),  # (B, 1)
-        ).squeeze(1)  # (B,)
+        current_q = all_q.gather(1, actions.unsqueeze(1)).squeeze(1)  # (B,)
 
         # ── TD target: r + γ · max_a′ Q(s′, a′; θ⁻) · (1 − done) ───────
         with torch.no_grad():
             next_q = self.target_net(next_states)  # (B, num_actions)
-
-            # Optional action masking.
-            # float("-inf") is semantically exact: these actions contribute
-            # zero probability under any softmax and are never the argmax.
             if "next_action_masks" in batch:
-                next_q = next_q.masked_fill(~batch["next_action_masks"], float("-inf"))
+                next_q = next_q.masked_fill(~batch["next_action_masks"], -1e8)
 
             next_q_max = next_q.max(dim=1)[0]  # (B,)
             targets = rewards + self.gamma * next_q_max * (1.0 - dones)
 
         # ── Loss ──────────────────────────────────────────────────────────
-        loss = F.mse_loss(current_q, targets)
+        loss = F.smooth_l1_loss(current_q, targets)
 
         # ── Gradient step ─────────────────────────────────────────────────
         self.optimizer.zero_grad()
@@ -207,6 +203,9 @@ class DQN:
         return UpdateResult(
             loss=loss.item(),
             q_mean=current_q.detach().mean().item(),
+            current_q_mean=current_q.detach().mean().item(),
+            target_q_mean=targets.detach().mean().item(),
+            target_q_max=targets.detach().max().item(),
         )
 
     # ── Target network sync ────────────────────────────────────────────────────

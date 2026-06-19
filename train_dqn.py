@@ -1,6 +1,8 @@
 import argparse
 
 from minesweeper_env import MinesweeperEnv
+
+# from rl.agents.double_dqn_agent import DoubleDQNAgent
 from rl.agents.dqn_agent import DQNAgent
 from rl.common.config import MinesweeperConfig
 
@@ -37,8 +39,9 @@ def main() -> None:
     print(f"[train.py]  run      = {cfg.run_name}")
     print()
 
-    env_url = getattr(cfg, "env_url", "http://localhost:8000")
+    env_url = getattr(cfg, "env_url", "http://localhost:9090")
     env = MinesweeperEnv(base_url=env_url)
+    # agent = DoubleDQNAgent(cfg, env)
     agent = DQNAgent(cfg, env)
     agent.train()
 

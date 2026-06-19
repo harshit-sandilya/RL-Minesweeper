@@ -13,11 +13,6 @@ import numpy as np
 from openenv.core.env_server import Action, Observation, State
 from pydantic import computed_field
 
-# ── Defaults ─────────────────────────────────────────────────────────────────
-_DEFAULT_N = 8
-_DEFAULT_MINES = 10
-_DEFAULT_SOLVE_TILES = 0
-
 
 # ── Action ────────────────────────────────────────────────────────────────────
 class MinesweeperAction(Action):
@@ -90,12 +85,53 @@ class MinesweeperObservation(Observation):
     @property
     def spatial(self) -> np.ndarray:
         """
-        (1, n, n) float32 in [0.0, 1.0] — direct input for CNN (PyTorch CHW).
+        (3, n, n) float32 spatial representation.
 
-        Usage:
-            state_tensor = torch.from_numpy(obs.spatial)
+        Channel 0:
+            hidden mask
+                1.0 = hidden
+                0.0 = revealed
+
+        Channel 1:
+            revealed clue values normalized to [0,1]
+                hidden cells = 0.0
+                revealed 0-8 = value / 8.0
+
+        Channel 2:
+            frontier mask
+                1.0 = cell is hidden AND adjacent to at least one revealed cell
+                0.0 = otherwise
         """
-        return (self.board_array[np.newaxis] / 9.0).astype(np.float32)
+        board = self.board_array
+
+        # ── Channel 0: Hidden mask ───────────────────────────────────────────
+        hidden = board == 9
+        hidden_float = hidden.astype(np.float32)
+
+        # ── Channel 1: Clue values ───────────────────────────────────────────
+        clues = np.where(hidden, 0.0, board / 8.0).astype(np.float32)
+
+        # ── Channel 2: Frontier mask ─────────────────────────────────────────
+        revealed = ~hidden
+
+        # Pad with False to easily handle edge boundaries when shifting
+        padded_revealed = np.pad(
+            revealed, pad_width=1, mode="constant", constant_values=False
+        )
+        adjacent_to_revealed = np.zeros_like(revealed, dtype=bool)
+
+        # Shift the padded mask in all 8 directions to find adjacencies
+        for dr in [-1, 0, 1]:
+            for dc in [-1, 0, 1]:
+                if dr == 0 and dc == 0:
+                    continue
+                adjacent_to_revealed |= padded_revealed[
+                    1 + dr : 1 + dr + self.n, 1 + dc : 1 + dc + self.n
+                ]
+
+        frontier = (hidden & adjacent_to_revealed).astype(np.float32)
+
+        return np.stack([hidden_float, clues, frontier], axis=0)
 
     @property
     def action_mask(self) -> np.ndarray:
@@ -116,9 +152,9 @@ class MinesweeperState(State):
     Server-side episode metadata (not the board itself).
 
     Attributes:
-        n (int): Grid side length (default: 8)
-        mines_count (int): Number of mines (default: 10)
-        solve_tiles (int): Curriculum difficulty level (default: 0)
+        n (int): Grid side length for the active episode
+        mines_count (int): Number of mines for the active episode
+        solve_tiles (int): Number of safe tiles pre-revealed for the active episode
 
     Computed properties:
         mine_density (float): mines / total_cells
@@ -129,9 +165,9 @@ class MinesweeperState(State):
         step_count : int
     """
 
-    n: int = _DEFAULT_N
-    mines_count: int = _DEFAULT_MINES  # matches engine attribute name
-    solve_tiles: int = _DEFAULT_SOLVE_TILES  # curriculum tier — 0 = hardest (no hints)
+    n: int
+    mines_count: int  # matches engine attribute name
+    solve_tiles: int  # number of safe tiles pre-revealed at episode start
 
     @computed_field
     @property

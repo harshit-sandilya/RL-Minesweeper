@@ -1,12 +1,12 @@
 """
 Smoke test for the Minesweeper environment.
-Requires the server running at localhost:8000.
+Requires the server running at localhost:9090.
 """
 
 from minesweeper_env.client import MinesweeperEnv
 from minesweeper_env.models import MinesweeperAction
 
-URL = "http://localhost:8000"
+URL = "http://localhost:9090"
 
 with MinesweeperEnv(base_url=URL).sync() as env:
     result = env.reset(n=8, mines=10, solve_tiles=3)
