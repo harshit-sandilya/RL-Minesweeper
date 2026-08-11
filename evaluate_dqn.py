@@ -1,6 +1,5 @@
 import argparse
 
-import numpy as np
 import torch
 
 from minesweeper_env import MinesweeperEnv
@@ -9,25 +8,10 @@ from minesweeper_env import MinesweeperEnv
 from rl.agents.dqn_agent import DQNAgent
 from rl.common.checkpoint import load_checkpoint
 from rl.common.config import MinesweeperConfig
+from rl.common.metrics import format_report, save_results_csv, summarize_results
 
 
-def _compute_stats(results: list[dict]) -> dict:
-    rewards = np.array([r["reward"] for r in results])
-    steps = np.array([r["steps"] for r in results])
-    wins = np.array([r["win"] for r in results])
-    return {
-        "n_episodes": len(results),
-        "win_rate": float(wins.mean()),
-        "avg_reward": float(rewards.mean()),
-        "std_reward": float(rewards.std()),
-        "min_reward": float(rewards.min()),
-        "max_reward": float(rewards.max()),
-        "avg_steps": float(steps.mean()),
-    }
-
-
-def _print_report(
-    stats: dict,
+def _print_checkpoint_header(
     cfg: MinesweeperConfig,
     checkpoint_path: str,
     ckpt_info: dict,
@@ -35,7 +19,7 @@ def _print_report(
     sep = "-" * 52
     meta = ckpt_info.get("metadata", {})
     print(sep)
-    print("  Evaluation Results")
+    print("  Checkpoint Info")
     print(sep)
     print(f"  Checkpoint     : {checkpoint_path}")
     print(f"  Saved at step  : {ckpt_info.get('step', '?'):,}")
@@ -46,14 +30,6 @@ def _print_report(
         f"  Board          : {cfg.n}x{cfg.n}  mines={cfg.mines}"
         f"  density={cfg.mines / cfg.n**2:.3f}"
     )
-    print(sep)
-    print(f"  Episodes       : {stats['n_episodes']:,}")
-    print(f"  Win rate       : {stats['win_rate'] * 100:.1f}%")
-    print(
-        f"  Avg reward     : {stats['avg_reward']:.4f}  (std={stats['std_reward']:.4f})"
-    )
-    print(f"  Reward range   : [{stats['min_reward']:.4f},  {stats['max_reward']:.4f}]")
-    print(f"  Avg steps/ep   : {stats['avg_steps']:.1f}")
     print(sep)
 
 
@@ -69,6 +45,19 @@ def _parse_args() -> argparse.Namespace:
         type=int,
         metavar="N",
         help="Number of greedy evaluation episodes.",
+    )
+    p.add_argument(
+        "--algorithm",
+        default="dqn",
+        metavar="NAME",
+        help="Label stored in results / used in report headers (e.g. dqn, double_dqn).",
+    )
+    p.add_argument(
+        "--save-csv",
+        default=None,
+        metavar="PATH",
+        help="If set, dump raw per-episode results to this CSV for later "
+        "cross-algorithm / board-size analysis in pandas.",
     )
     return p.parse_args()
 
@@ -90,10 +79,16 @@ def main() -> None:
     ckpt_info = load_checkpoint(args.checkpoint, agent.online_net)
     agent.algo.sync_target()
 
-    results = agent.evaluate(n_episodes=args.episodes)
+    _print_checkpoint_header(cfg, args.checkpoint, ckpt_info)
 
-    stats = _compute_stats(results)
-    _print_report(stats, cfg, args.checkpoint, ckpt_info)
+    results = agent.evaluate(n_episodes=args.episodes, algorithm=args.algorithm)
+
+    summary = summarize_results(results, algorithm=args.algorithm)
+    print(format_report(summary))
+
+    if args.save_csv:
+        save_results_csv(results, args.save_csv)
+        print(f"  Raw per-episode results saved -> {args.save_csv}")
 
 
 if __name__ == "__main__":

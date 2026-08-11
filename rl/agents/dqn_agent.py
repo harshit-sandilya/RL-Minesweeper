@@ -48,10 +48,11 @@ from torch import from_numpy
 
 from minesweeper_env import MinesweeperAction
 from rl.algorithms.dqn import DQN
-from rl.common.checkpoint import checkpoint_path, load_checkpoint, save_checkpoint
+from rl.common.checkpoint import TopKCheckpointManager, load_checkpoint
 from rl.common.config import MinesweeperConfig
 from rl.common.epsilon_scheduler import make_scheduler
 from rl.common.logger import Logger
+from rl.common.metrics import wilson_ci
 from rl.common.replay_buffer import ReplayBuffer
 from rl.common.utils import RollingMean, Timer, get_device, set_seed
 from rl.networks.cnn_network import MinesweeperCNN
@@ -164,6 +165,14 @@ class DQNAgent:
         print(f"Network: {self.online_net}")
         print(f"Buffer:  {self.replay_buffer}")
         print()
+        ckpt_mgr = TopKCheckpointManager(
+            directory=self.config.checkpoint_dir,
+            run_name=self.config.run_name,
+            k=self.config.checkpoint_top_k,
+        )
+        print(
+            f"Checkpointing: keeping top-{ckpt_mgr.k} by eval win-rate CI lower bound"
+        )
         window_max_rev = 0
         window_max_rev_ratio = 0.0
 
@@ -227,6 +236,8 @@ class DQNAgent:
                 )
                 eval_q_mean = float(np.mean([r["q_mean"] for r in eval_results]))
                 eval_q_max = float(np.max([r["q_max"] for r in eval_results]))
+                eval_wins = int(sum(r["win"] for r in eval_results))
+                eval_ci_lo, eval_ci_hi = wilson_ci(eval_wins, len(eval_results))
 
                 self.logger.log_scalars(
                     {
@@ -242,12 +253,8 @@ class DQNAgent:
                     step=ep,
                 )
 
-                save_checkpoint(
-                    path=checkpoint_path(
-                        self.config.checkpoint_dir,
-                        self.config.run_name,
-                        episode=ep,
-                    ),
+                saved = ckpt_mgr.maybe_save(
+                    metric=eval_ci_lo,
                     network=self.online_net,
                     optimizer=self.optimizer,
                     episode=ep,
@@ -256,10 +263,16 @@ class DQNAgent:
                     metadata={
                         "win_rate": self._win_rate.mean(),
                         "eval_win_rate": eval_win_rate,
+                        "eval_win_rate_ci": [eval_ci_lo, eval_ci_hi],
                         "algo": "dqn",
                         "eval_rev_ratio": eval_rev_ratio,
                     },
                 )
+                if not saved:
+                    print(
+                        f"[Checkpoint] Skipped ep={ep}  "
+                        f"(CI-lower={eval_ci_lo:.3f} did not beat top-{ckpt_mgr.k})"
+                    )
 
         self.logger.dump_summary()
         self.logger.close()
@@ -303,13 +316,14 @@ class DQNAgent:
                     reward = step_result.reward
                     done = step_result.done
 
+                    is_mine_hit_step = done and next_obs.status == 2
                     revealed_safe = (
                         next_obs.n * next_obs.n
-                        - next_obs.mines_count
                         - next_obs.unrevealed_count
+                        - int(is_mine_hit_step)
                     )
                     max_revealed = max(max_revealed, revealed_safe)
-                    if done and next_obs.status == 2:
+                    if is_mine_hit_step:
                         mine_hit = True
 
                     self.replay_buffer.push(
@@ -435,7 +449,7 @@ class DQNAgent:
         return best_action, float(masked_q[best_action])
 
     # ── Evaluation ────────────────────────────────────────────────────────────
-    def evaluate(self, n_episodes: int) -> list[dict]:
+    def evaluate(self, n_episodes: int, algorithm: str = "dqn") -> list[dict]:
         """
         Run n_episodes greedy episodes and return per-episode stats.
 
@@ -455,7 +469,7 @@ class DQNAgent:
         results = []
 
         for ep in range(1, n_episodes + 1):
-            with self.env.sync() as env:
+            with self.env.sync() as env, Timer() as ep_timer:
                 obs_result = env.reset(
                     **self._base_env_params,
                     solve_tiles=0,
@@ -475,8 +489,9 @@ class DQNAgent:
                     ep_reward += step_result.reward
                     done = step_result.done
                     ep_steps += 1
+                    is_mine_hit_step = done and obs.status == 2
                     revealed_safe = (
-                        obs.n * obs.n - obs.mines_count - obs.unrevealed_count
+                        obs.n * obs.n - obs.unrevealed_count - int(is_mine_hit_step)
                     )
                     max_revealed = max(max_revealed, revealed_safe)
 
@@ -484,20 +499,25 @@ class DQNAgent:
                 final_unrevealed = obs.unrevealed_count
                 remaining_safe = total_safe - max_revealed
                 revealed_ratio = max_revealed / total_safe if total_safe > 0 else 0.0
-                results.append(
-                    {
-                        "reward": ep_reward,
-                        "steps": ep_steps,
-                        "win": int(obs.status == 1),
-                        "revealed_safe": max_revealed,
-                        "total_safe": total_safe,
-                        "revealed_ratio": revealed_ratio,
-                        "final_unrevealed": final_unrevealed,
-                        "remaining_safe": remaining_safe,
-                        "q_mean": float(np.mean(q_vals_ep)) if q_vals_ep else 0.0,
-                        "q_max": float(np.max(q_vals_ep)) if q_vals_ep else 0.0,
-                    }
-                )
+
+            results.append(
+                {
+                    "reward": ep_reward,
+                    "steps": ep_steps,
+                    "win": int(obs.status == 1),
+                    "revealed_safe": max_revealed,
+                    "total_safe": total_safe,
+                    "revealed_ratio": revealed_ratio,
+                    "final_unrevealed": final_unrevealed,
+                    "remaining_safe": remaining_safe,
+                    "q_mean": float(np.mean(q_vals_ep)) if q_vals_ep else 0.0,
+                    "q_max": float(np.max(q_vals_ep)) if q_vals_ep else 0.0,
+                    "wall_clock_sec": ep_timer.elapsed_ms / 1000.0,
+                    "board_n": obs.n,
+                    "mines_count": obs.mines_count,
+                    "algorithm": algorithm,
+                }
+            )
 
             if ep % max(1, n_episodes // 10) == 0 or ep == n_episodes:
                 wr = sum(r["win"] for r in results) / len(results)

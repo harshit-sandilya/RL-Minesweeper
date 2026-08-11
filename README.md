@@ -50,7 +50,6 @@ Example current config from `configs/dqn.yml`:
 From `minesweeper_env/`:
 
 ```bash
-conda activate rl
 uv run server --port 9090
 ```
 
@@ -59,28 +58,16 @@ uv run server --port 9090
 From repo root:
 
 ```bash
-conda activate rl
 python train_dqn.py --config configs/dqn.yml
 ```
 
 ### Quick smoke checks
 
 ```bash
-conda activate rl
 python test_env.py
-python train_dqn.py --config configs/dqn.yml
 ```
 
 For smoke checks, stop training as soon as it starts producing episode logs without errors.
-
-## Experiment tracker
-
-The detailed running experiment log lives in `docs/EXPERIMENTS.md`.
-
-Current tracked entries:
-
-- `EXP-12` — baseline diagnosis from `logs/train_output_12.log` and `logs/eval_output_12.log`
-- `EXP-13` — planned rerun after explicit reset + training-owned curriculum refactor
 
 ## Recent codebase changes relevant to experiments
 

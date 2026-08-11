@@ -75,6 +75,7 @@ class Config:
     log_dir: str = "runs"  # TensorBoard SummaryWriter root
     run_name: str = "experiment"  # sub-folder inside log_dir
     checkpoint_dir: str = "checkpoints"  # where .pt files are saved
+    checkpoint_top_k: int = 1  # keep only the top-k checkpoints by eval metric
 
     # ── RL core (shared by every algorithm) ────────────────────────────────
     gamma: float = 0.99  # discount factor

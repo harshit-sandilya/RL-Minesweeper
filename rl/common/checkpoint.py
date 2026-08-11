@@ -256,3 +256,144 @@ def latest_checkpoint(directory: str) -> Optional[str]:
         return None
 
     return max(candidates, key=os.path.getmtime)
+
+
+# ── Top-k checkpoint manager ─────────────────────────────────────────────────
+
+
+class TopKCheckpointManager:
+    """
+    Keeps only the top-k checkpoints ranked by an eval metric (higher is
+    better) — mirrors PyTorch Lightning's ModelCheckpoint(save_top_k=k).
+
+    Unlike periodic "save every N episodes" checkpointing, a checkpoint is
+    only written if it would rank in the current top-k; whenever a new one
+    is saved and the set is already full, the worst-ranked checkpoint is
+    evicted (both from tracking and from disk).
+
+    This class only knows "higher metric = better" — it doesn't know what
+    the metric means (win rate, CI lower bound, negative loss, ...), so the
+    same manager works for DQN, A2C, PPO, or anything else that calls
+    maybe_save() after an eval pass.
+
+    Usage:
+        ckpt_mgr = TopKCheckpointManager(
+            cfg.checkpoint_dir, cfg.run_name, k=cfg.checkpoint_top_k
+        )
+        ...
+        ckpt_mgr.maybe_save(
+            metric=eval_win_rate_ci_lower,
+            network=agent.online_net,
+            optimizer=agent.optimizer,
+            step=global_step,
+            episode=ep,
+            config=cfg,
+            metadata={"eval_win_rate": eval_win_rate, "algo": "dqn"},
+        )
+    """
+
+    def __init__(self, directory: str, run_name: str, k: int = 1):
+        if k < 1:
+            raise ValueError(f"k must be >= 1, got {k}")
+        self.directory = directory
+        self.run_name = run_name
+        self.k = k
+        # (metric, path, episode, step), kept sorted ascending — worst first
+        self._kept: list = []
+        self._discover_existing()
+
+    def _discover_existing(self) -> None:
+        """
+        Rebuild tracking state from any top-k checkpoints for this run_name
+        already on disk, so resuming an interrupted training run doesn't
+        lose track of what's kept or silently exceed k files.
+        """
+        if not os.path.isdir(self.directory):
+            return
+        prefix = f"{self.run_name}_topk_ep"
+        for fname in os.listdir(self.directory):
+            if not (fname.startswith(prefix) and fname.endswith(".pt")):
+                continue
+            path = os.path.join(self.directory, fname)
+            try:
+                payload = torch.load(path, map_location="cpu", weights_only=False)
+            except Exception:
+                continue
+            metric = payload.get("metadata", {}).get("rank_metric")
+            if metric is None:
+                continue
+            episode = payload.get("episode", 0)
+            step = payload.get("step", 0)
+            self._kept.append((float(metric), path, episode, step))
+        self._kept.sort(key=lambda t: t[0])
+
+        # If a previous run left more than k files (e.g. k was lowered
+        # since), trim immediately.
+        while len(self._kept) > self.k:
+            _, evict_path, evict_ep, _ = self._kept.pop(0)
+            if os.path.exists(evict_path):
+                os.remove(evict_path)
+                print(
+                    f"[Checkpoint] Evicted (stale, over top-{self.k}) "
+                    f"→ {evict_path}  (ep={evict_ep})"
+                )
+
+    def maybe_save(
+        self,
+        metric: float,
+        network: nn.Module,
+        optimizer: torch.optim.Optimizer,
+        step: int,
+        episode: int,
+        config: Any,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """
+        Save a checkpoint for this eval result IF it belongs in the current
+        top-k (higher metric = better), evicting the current worst kept
+        checkpoint (tracking + disk file) if the set is already full.
+
+        Returns True if saved, False if discarded (didn't rank in top-k).
+        """
+        if len(self._kept) >= self.k and metric <= self._kept[0][0]:
+            return False
+
+        path = checkpoint_path(
+            self.directory, self.run_name, tag=f"topk_ep{episode:06d}"
+        )
+        meta = dict(metadata or {})
+        meta["rank_metric"] = float(metric)
+        save_checkpoint(
+            path=path,
+            network=network,
+            optimizer=optimizer,
+            step=step,
+            episode=episode,
+            config=config,
+            metadata=meta,
+        )
+
+        self._kept.append((float(metric), path, episode, step))
+        self._kept.sort(key=lambda t: t[0])
+
+        if len(self._kept) > self.k:
+            _, evict_path, evict_ep, _ = self._kept.pop(0)
+            if evict_path != path and os.path.exists(evict_path):
+                os.remove(evict_path)
+                print(f"[Checkpoint] Evicted (stale) → {evict_path}  (ep={evict_ep})")
+
+        return True
+
+    @property
+    def best(self) -> Optional[tuple]:
+        """(metric, path) of the current best kept checkpoint, or None."""
+        if not self._kept:
+            return None
+        m, p, _, _ = max(self._kept, key=lambda t: t[0])
+        return (m, p)
+
+    def __repr__(self) -> str:
+        kept = ", ".join(
+            f"{m:.3f}" for m, *_ in sorted(self._kept, key=lambda t: -t[0])
+        )
+        return f"TopKCheckpointManager(k={self.k}, kept_metrics=[{kept}])"
