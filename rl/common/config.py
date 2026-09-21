@@ -104,6 +104,16 @@ class Config:
         10.0  # gradient clipping norm for the joint actor+critic update
     )
 
+    # ── PPO-specific ───────────────────────────────────────────────────────
+    gae_lambda: float = 0.95  # GAE bias/variance tradeoff
+    clip_epsilon: float = 0.2  # PPO trust-region clip range
+    clip_value_loss: bool = (
+        True  # also clip the value loss (as in the reference PPO impl)
+    )
+    ppo_epochs: int = 4  # gradient epochs per rollout
+    minibatch_size: int = 64  # minibatch size within each epoch
+    rollout_episodes: int = 16  # full episodes collected before each rollout of updates
+
     # ── Class method ───────────────────────────────────────────────────────
 
     @classmethod
