@@ -95,6 +95,15 @@ class Config:
     min_replay_size: int = 1_000  # steps before first gradient update
     target_update_freq: int = 1_000  # hard copy online → target every N steps
 
+    # ── A2C-specific ───────────────────────────────────────────────────────
+    value_coef: float = 0.5  # weight on critic (value) loss in the combined loss
+    entropy_coef: float = (
+        0.01  # weight on entropy bonus (A2C's only exploration pressure)
+    )
+    grad_clip_norm: float = (
+        10.0  # gradient clipping norm for the joint actor+critic update
+    )
+
     # ── Class method ───────────────────────────────────────────────────────
 
     @classmethod

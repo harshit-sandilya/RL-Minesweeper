@@ -1,0 +1,27 @@
+run_name: "a2c_8x8_baseline"
+device: "cpu"
+n: 8
+mines: 10
+solve_tiles: 6
+curriculum_enabled: true
+curriculum_hold_steps: 20000
+curriculum_end_steps: 80000
+env_url: "http://localhost:9090"
+
+total_episodes: 100000
+eval_every: 500
+eval_episodes: 100
+seed: 42
+
+log_dir: "runs"
+checkpoint_dir: "checkpoints"
+checkpoint_top_k: 1
+
+gamma: 0.99
+learning_rate: 0.0001
+lr_warmup_steps: 100
+lr_total_updates: 100000
+
+value_coef: 0.5
+entropy_coef: 0.01
+grad_clip_norm: 10.0

@@ -1,7 +1,7 @@
 import argparse
 
 from minesweeper_env import MinesweeperEnv
-from rl.agents.dqn_agent import DQNAgent
+from rl.agents.a2c_agent import A2CAgent
 from rl.common.config import MinesweeperConfig
 
 
@@ -15,7 +15,7 @@ def _parse_args() -> argparse.Namespace:
         "--config",
         required=True,
         metavar="PATH",
-        help="Path to the YAML config file  (e.g. ./configs/dqn.yml)",
+        help="Path to the YAML config file  (e.g. ./configs/a2c.yml)",
     )
 
     return p.parse_args()
@@ -30,7 +30,7 @@ def main() -> None:
     args = _parse_args()
     cfg = _load_config(args)
 
-    print("[train.py]  algo     = dqn")
+    print("[train.py]  algo     = a2c")
     print(f"[train.py]  config   = {args.config}")
     print(f"[train.py]  board    = {cfg.n}×{cfg.n}  mines={cfg.mines}")
     print(f"[train.py]  device   = {cfg.device}")
@@ -39,8 +39,7 @@ def main() -> None:
 
     env_url = getattr(cfg, "env_url", "http://localhost:9090")
     env = MinesweeperEnv(base_url=env_url)
-    # agent = DoubleDQNAgent(cfg, env)
-    agent = DQNAgent(cfg, env)
+    agent = A2CAgent(cfg, env)
     agent.train()
 
     print("[train.py]  Training finished.")

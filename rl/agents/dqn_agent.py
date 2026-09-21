@@ -55,7 +55,7 @@ from rl.common.logger import Logger
 from rl.common.metrics import wilson_ci
 from rl.common.replay_buffer import ReplayBuffer
 from rl.common.utils import RollingMean, Timer, get_device, set_seed
-from rl.networks.cnn_network import MinesweeperCNN
+from rl.networks.q_network import MinesweeperCNN
 
 
 class DQNAgent:

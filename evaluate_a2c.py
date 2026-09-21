@@ -3,7 +3,7 @@ import argparse
 import torch
 
 from minesweeper_env import MinesweeperEnv
-from rl.agents.dqn_agent import DQNAgent
+from rl.agents.a2c_agent import A2CAgent
 from rl.common.checkpoint import load_checkpoint
 from rl.common.config import MinesweeperConfig
 from rl.common.metrics import format_report, save_results_csv, summarize_results
@@ -24,6 +24,11 @@ def _print_checkpoint_header(
     print(f"  Saved at ep    : {ckpt_info.get('episode', '?'):,}")
     if "win_rate" in meta:
         print(f"  Train win rate : {meta['win_rate']:.3f}  (checkpoint metadata)")
+    if "eval_win_rate" in meta:
+        print(
+            f"  Eval win rate  : {meta['eval_win_rate']:.3f}  "
+            f"(checkpoint metadata, at save time)"
+        )
     print(
         f"  Board          : {cfg.n}x{cfg.n}  mines={cfg.mines}"
         f"  density={cfg.mines / cfg.n**2:.3f}"
@@ -33,10 +38,12 @@ def _print_checkpoint_header(
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Evaluate a trained Minesweeper checkpoint.",
+        description="Evaluate a trained Minesweeper A2C checkpoint.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    p.add_argument("--checkpoint", metavar="PATH", help="Direct path to a .pt file.")
+    p.add_argument(
+        "--checkpoint", metavar="PATH", required=True, help="Direct path to a .pt file."
+    )
     p.add_argument(
         "--episodes",
         default=100,
@@ -46,9 +53,9 @@ def _parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--algorithm",
-        default="dqn",
+        default="a2c",
         metavar="NAME",
-        help="Label stored in results / used in report headers (e.g. dqn, double_dqn).",
+        help="Label stored in results / used in report headers.",
     )
     p.add_argument(
         "--save-csv",
@@ -71,10 +78,12 @@ def main() -> None:
     cfg = MinesweeperConfig(**valid) if valid else MinesweeperConfig()
 
     env = MinesweeperEnv(base_url=cfg.env_url)
-    agent = DQNAgent(cfg, env)
+    agent = A2CAgent(cfg, env)
 
-    ckpt_info = load_checkpoint(args.checkpoint, agent.online_net)
-    agent.algo.sync_target()
+    ckpt_info = load_checkpoint(args.checkpoint, agent.actor_net)
+    critic_state = ckpt_info.get("metadata", {}).get("critic_state_dict")
+    if critic_state is not None:
+        agent.critic_net.load_state_dict(critic_state)
 
     _print_checkpoint_header(cfg, args.checkpoint, ckpt_info)
 
